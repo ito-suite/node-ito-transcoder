@@ -1,0 +1,25 @@
+{
+  "name": "node-ito-transcoder",
+  "version": "2.0.1",
+  "description": "The transcoder is a shell application with node bindings for file transcoding.",
+  "main": "node-ito-transcoder.js",
+  "command" : "ito.sh",
+  "directories": {
+    "bin": "bin",
+    "lib": "lib",
+    "tests": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ito-suite/node-ito-transcoder.git"
+  },
+  "author": "ITO-Group",
+  "license": "GPL-3",
+  "bugs": {
+    "url": "https://github.com/ito-suite/node-ito-transcoder/issues"
+  },
+  "homepage": "https://github.com/ito-suite/node-ito-transcoder"
+}

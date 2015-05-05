@@ -1,0 +1,14 @@
+video="video=(preview[720] -ss[00:02:03.125] output[jpg]),image=noexif src[preview] (output[jpg] (thumb[120])(poster[720])(poster[720])(poster[360])(preview[720]))(output[gif] thumbgif[120]),video=threads[4](w720 hq (x264[high] output[mp4]) (ogv output[ogg]) (webm output[webm]))(w360 perf (x264[baseline] output[mp4]));"
+
+audio=
+gif=
+png=
+vector=
+raw=
+bitmap=
+pdf=
+office=
+compressed=
+3d=
+url=
+binary=

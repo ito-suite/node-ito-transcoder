@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# public domain by denjell
+# make UUID according to OAI Best Practice
+# not sure if this really is best practice.
+# it seemes that the command uuid is the preferred method.
+
+# we md5 the server's mac address and the timestamp
+
+# one way to get the mac - needs sudo -> BAD!
+mac=$(sudo ifconfig | awk '/eth/ { print $5 }')
+
+# hard-wired works fine.
+#mac='2c:d4:44:94:e0:06'
+
+
+date=$(date +%N)
+md5=$(echo -n $mac $date | md5sum - | cut -d' ' -f1 )
+
+echo $md5 | awk '{for(i=1;i<=length($0);i+=4){printf("%s:",substr($0,i,4))}}'|awk '{sub(/:$/,"")};1'
+
+#gives eg 7929:8a2d:bfad:d4aa:293a:dce0:66fc:d95e
+

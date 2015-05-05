@@ -1,0 +1,659 @@
+#!/bin/bash
+
+###########################################################
+#       _             _     _       _ _       _    _      #
+#      / \   _ __ ___| |__ (_)_   _(_) |_ ___| | _| |_    #
+#     / △ \ | '__/ __| '_ \| \ \ / / | __/ _ \ |/ / __|   #
+#    / ___ \| | | (__| | | | |\ V /| | ||  __/   <| |     #
+#   /_/   \_\_|  \___|_| |_|_| \_/ |_|\__\___|_|\_\__|    #
+#   ===================================================   #
+#   Archive Construction for Modern Media Professionals   #
+#                                                         #
+###########################################################
+
+###########################################################
+#                                                         #
+#    anymedia transcoding server                          #
+#                                                         #
+#    All Rights Reserved 2012 - 2014                      #
+#    Not for redistribution.                              #
+#    this package: v 0.2 > FishChowder                    #
+#                                                         #
+#    put this file in ~/.lessfilter                       #
+#                                                         #
+#    We bootstrap lessfilter to get the filetype any      #
+#    isolate unknown filetypes from system access -       #
+#    and then transcode it.                               #
+#                                                         #
+###########################################################
+
+#######
+#
+# TODO: add a flag for mime-override
+#       pull the mime list from somewhere that can be added to :3000/api/va/mime.json
+#       functionalize certain features (e.g. thumbnailing)
+#
+#       make one pdf from a collection. (very useful!!!)
+#       gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -dPDFSETTINGS=/prepress -sOutputFile=filecat.pdf $file1.pdf $file2.pdf
+#       need to figure out a way to check and repair filename here in case of "rm -rf /*.jpg"
+#       package analysis (with zip files, to unzip)
+#       
+#       Generic Settings (like thumbwidth / height, video formats etc...)
+#
+#######
+
+
+# get the start time
+begin=$(date +%s)
+date=$(date);
+# get the file up to the last dot
+fullfile=$1
+file="${1%.*}"
+
+# get the filename without ending or folders
+base=$(basename $1)
+base="${base%.*}"
+
+# get the dirname
+dir=$(dirname $1)
+
+#grab the extension
+extension="${1##*.}"
+
+# make it lowercase
+extension=${extension,,}
+
+# get the working directory
+PWD=$(pwd)
+
+# now get the mime type
+# file seems to fail in many cases
+#mime=$( echo "$(file -b -k --mime-type $1)" )
+
+# xdg-mime does a better job than file 
+mime=$( xdg-mime query filetype $1 )
+
+# ply & obj workarounds - could be cleaner, but this works
+# ply mime is either text/plain or application/binary
+# in the latter case we expect an attack vector and ignore it.
+
+
+if [[ $extension == "ply" ]] && [[ $mime == "text/plain" ]]
+  then
+
+    # all ply files start with ply, so we grab the first line
+    read -r firstline < $1
+
+    # but because it may be from a mac, unix or windows system we don't know how the line ends
+    # so try to cut the string at y and if the remains are pl, then win!
+    # of course this is a work around, but it is fast and always right.
+    firstline=$(echo $firstline | cut -d'y' -f1)
+    if [[  $firstline == "pl" ]]
+      then
+        mime="model/fake-mime-ply" 
+    fi
+fi
+
+# security risk. we are now assuming something...
+if [[ $extension == "obj" ]] && [[ $mime == "text/plain" ]]
+  then
+    mime="model/fake-mime-obj"
+fi
+if [[ $extension == "mod" ]] && [[ $mime == "application/binary" ]]
+  then
+    mime="model/fake-mime-obj"
+fi
+
+
+echo "FILE:   ${base}.${extension}"
+echo "MIME:   ${mime}"
+echo "START:  ${date}"
+
+case "$mime" in 
+
+###########################################################
+#                                                         #
+#     IMAGES                                              #
+#                                                         #
+###########################################################
+
+# CAVEATS
+
+# some multilayer images (XCF!!!) are weird and don't really work that well... :/
+# Raw images will probably be too dark
+# eps, svg and ps files will probably look terrible...
+#  this might be a solution: epstopdf foo.eps; pdf2svg foo.pdf foo.svg
+
+
+'image/gif' | 'image/x-gif')
+gm convert $1'[0-1000]' -auto-orient -flatten -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 "${file}-preview.jpg"
+echo "Created preview image from ${1}"
+
+gm convert $1'[0-1000]' -auto-orient -flatten -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 +profile '*' "${file}-thumb.jpg"  
+echo "Created thumb image from ${1}" 
+
+
+
+
+analyze=$(gm identify "${1}" -format "|%m:%h:%w:%p")
+firstframe=$(echo $analyze | cut -d'|' -f2)
+filetype=$(echo $firstframe | cut -d':' -f1)
+
+if [ $filetype = "GIF" ]
+  then
+
+    base=$(basename $1)
+    base="${base%.*}"
+    dir=$(dirname $1)
+    tmpdir="${dir}/${base}"
+    mkdir "${tmpdir}"
+
+    h=$(echo $firstframe | cut -d':' -f2)
+    w=$(echo $firstframe | cut -d':' -f3)
+
+    lastframe=${analyze##*|}
+    framecount=${lastframe##*:}
+    framecountpadded=$(echo "$framecount + 2.5" |bc -l)
+
+    echo "$(gm identify -verbose ${1}[0])" > "${tmpdir}-gm.log"
+    framedelay=$(cat "${tmpdir}-gm.log" | grep "Delay")
+    compose=$(cat "${tmpdir}-gm.log" | grep "Compose")
+    dispose=$(cat "${tmpdir}-gm.log" | grep "Dispose")
+    background=$(cat "${tmpdir}-gm.log" | grep "Background Color")
+
+    framedelay=${framedelay##* }
+
+    framerate=$(echo "1 / $framedelay * 100" |bc -l)
+    framerate=$(printf "%.1f" $framerate)
+
+    background=${background##* }
+
+    duration=$(echo "$framedelay / 100 * $framecountpadded" |bc -l)
+    duration=$(printf "%.2f" $duration)
+
+    crop=0
+    # we need to make sure that the gif does not have any odd dimensions like 151x144 > make it into 150x144
+    h_even=$(( $h % 2 ))
+    if [ $h_even -eq 0 ]
+      then
+        trimheight=${h}
+      else
+        trimheight=$(echo "$h - 1" |bc -l)
+        crop=1
+    fi
+    w_even=$(( $w % 2 ))
+    if [ $w_even -eq 0 ]
+      then
+        trimwidth=${w}
+      else
+        trimwidth=$(echo "$w - 1" |bc -l)
+        crop=1
+    fi
+ 
+    gm convert  "$1" -matte -coalesce +adjoin  -depth 8 "${tmpdir}/%05d.png" 
+    if (( $crop == 1 )) 
+      then
+      gm mogrify -crop "${trimwidth}x${trimheight}+0+0" "${tmpdir}/*.png"
+    fi
+
+    ffmpeg -loglevel error -y -ar 48000 -ac 2 -f s16le -i /dev/zero -r ${framerate}/1 -f image2 -i "${tmpdir}/%05d.png" -c:a libfdk_aac -c:v libx264 -vf "fps=fps=25,format=pix_fmts=yuv420p" -t $duration "${dir}/${base}-tmp.mp4"
+    qt-faststart "${dir}/${base}-tmp.mp4" "${dir}/${base}.mp4"
+
+    rm "${dir}/${base}-tmp.mp4"
+
+
+fi
+    
+#    show us what it discovered
+#    echo framedelay: $framedelay
+#    echo compose:    $compose
+#    echo dispose:    $dispose
+#    echo background: $background
+#    echo framecount: $framecount 
+#    echo framerate:  $framerate frames / second
+#    echo duration:   $duration seconds
+#    echo height:     $h
+#    echo width:      $w
+
+rm -r "${tmpdir}"
+
+
+;;
+
+'image/png' | 'image/x-apple-ios-png' | 'image/x-png')
+gm convert $1'[0-1000]' -auto-orient -flatten -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 +profile '!exif,*' "${file}-preview.jpg"
+echo "Created preview image from ${1}"
+
+gm convert $1'[0-1000]' -auto-orient -flatten -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 +profile '*' "${file}-thumb.jpg"  
+echo "Created thumb image from ${1}" 
+
+gm convert $1'[0-1000]' -auto-orient -filter lanczos -resize '1920x1080>' "${file}-1080.png"
+echo "Created 1080p image from ${1}"  
+
+gm convert $1'[0-1000]' -auto-orient -filter lanczos -resize '1280x720>' "${file}-720.png"
+echo "Created 720p image from ${1}"
+
+;;
+
+# here the vectors -> NOT TESTED YET!!!
+'image/x-eps' | 'image/eps' | 'application/eps' | 'application/postscript' | 'application/x-eps' | 'image/svg+xml' ) 
+
+ps2pdf $1 ${file}.pdf
+
+gm convert ${file}.pdf -auto-orient -flatten -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 +profile '!exif,*' "${file}-preview.jpg"
+
+gm convert ${file}-preview.jpg -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane -depth 8 "${file}-thumb.jpg"  
+
+pdf2svg ${file}.pdf ${file}-rendered.svg
+
+;;
+
+# now the raws (just about all that exist, right?)
+
+'image/x-panasonic-raw2' | 'image/x-nikon-nef' | 'image/x-canon-cr2' | 'image/x-canon-crw' | 'image/x-kodak-drc' | 'image/x-kodak-dcr' | 'image/x-fuji-raf' | 'image/x-adobe-dng' | 'image/x-dcraw' | 'image/x-raw-adobe' | 'image/x-raw-hasselblad' | 'image/3fr' | 'image/x-raw-fuji' | 'image/x-fuji-raf' | 'image/x-raw-canon' | 'image/x-raw-kodak' | 'image/x-raw-minolta' | 'image/x-raw-nikon' | 'image/x-raw-olympus' | 'image/x-raw-pentax' | 'image/x-pentax-pef' | 'image/x-raw-sony ' | 'image/x-raw-sigma' | 'image/x-raw-panasonic' | 'image/x-raw-leica' | 'image/x-raw-red' | 'image/jp2' | 'image/x-macpaint' | 'application/x-ufraw' | 'image/x-dcraw' | 'image/x-adobe-dng' | 'image/x-minolta-mrw' | 'image/x-fuji-raf' | 'image/x-kodak-k25' | 'image/x-kodak-kdc' | 'image/x-minolta-mrw' | 'image/x-olympus-orf' | 'image/x-panasonic-raw' | 'image/x-pentax-pef' | 'image/x-sigma-x3f' | 'image/x-sony-srf' | 'image/x-sony-sr2' | 'image/x-sony-arw' | 'image/x-msod' ) 
+
+# ufraw uses dcraw and that evilly monstrout lensfun 
+ufraw-batch --overwrite --auto-crop --lensfun=auto --wb=camera --restore=hsv --base-curve=camera --out-type=jpg $1
+
+gm convert ${file}.jpg "${file}.exif"
+echo "Created original exif from ${1}"  
+
+gm convert ${file}.jpg -auto-orient -flatten -depth 16 -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-preview.jpg"
+echo "Created preview image from ${1}"
+
+# fix up the exif information   
+gm convert ${file}.jpg -auto-orient -flatten -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 -depth 8 +profile '*' "${file}-thumb.jpg"  
+echo "Created thumb image from ${1}" 
+
+# make four sizes
+# keep the exif info > +profile '!exif,*' 
+
+gm convert ${file}.jpg -auto-orient -flatten -depth 16  -filter lanczos -resize '1920x1080>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-1080.jpg"
+echo "Created 1080p image from ${1}"  
+
+gm convert ${file}.jpg -auto-orient -flatten -depth 16 -filter lanczos -resize '1280x720>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-720.jpg"
+echo "Created 720p image from ${1}"
+
+;;
+
+
+# now the bitmaps
+'image/jpeg' | 'image/tiff' | 'image/xcf' | 'image/x-xcf' |  'image/photoshop' | 'image/x-photoshop' | 'image/psd' | 'application/photoshop' | 'application/psd' | 'zz-application/zz-winassoc-psd' |  'image/bmp' | 'image/x-icon' | ' image/x-mng' | 'image/x-portable-arbitrarymap' | 'image/x-portable-anymap' | 'image/x-portable-bitmap' | 'image/x-portable-graymap' | 'image/x-portable-pixmap') 
+
+gm convert $1 "${file}.exif"
+echo "Created original exif from ${1}"  
+
+gm convert $1'[0-1000]' -auto-orient -flatten -depth 16 -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-preview.jpg"
+echo "Created preview image from ${1}"
+
+# fix up the exif information   
+gm convert $1'[0-1000]' -auto-orient -flatten -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 -depth 8 +profile '*' "${file}-thumb.jpg"  
+echo "Created thumb image from ${1}" 
+
+# make four sizes
+# keep the exif info > +profile '!exif,*' 
+
+gm convert $1'[0-1000]' -auto-orient -flatten -depth 16  -filter lanczos -resize '1920x1080>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-1080.jpg"
+echo "Created 1080p image from ${1}"  
+
+gm convert $1'[0-1000]' -auto-orient -flatten -depth 16 -filter lanczos -resize '1280x720>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-720.jpg"
+echo "Created 720p image from ${1}"  
+
+  
+
+ 
+
+;; 
+
+###########################################################
+#                                                         #
+#     VIDEOS - Works, but is graveyard slow               #
+#                                                         #
+###########################################################
+
+# there might be a few more out there, but c'mon. This should be enough!!!
+'video/mp4' | 'video/ogg' | 'video/webm' | 'video/3gpp' | 'video/3gpp2' | 'video/x-flv' | 'video/x-msvideo' | 'video/msvideo' | 'video/h261' | 'video/h263' | 'video/h264' | 'video/h265' | 'video/jpeg' | 'video/x-m4v' | 'video/x-ms-wm' | 'video/mpeg' | 'application/mp4' | 'video/quicktime' | 'video/x-sgi-movie' )
+
+# screen display constants
+big_width=1280
+med_width=640
+thumb_width=120
+tmp=$(dirname $1)"/tmp"
+mkdir $tmp
+# calculate the aspect ratio
+d_aspect_ratio=$(ffprobe -show_streams $1 2>/dev/null | grep "display_aspect_ratio=" | cut -d'=' -f2)
+width_ratio=$(echo $d_aspect_ratio | cut -d':' -f1)
+height_ratio=$(echo $d_aspect_ratio | cut -d':' -f2)
+
+# calculate the *_REAL_* height and width
+big_height=$(expr $big_width / $width_ratio \* $height_ratio)
+med_height=$(expr $med_width / $width_ratio \* $height_ratio)
+thumb_height=$(expr $thumb_width / $width_ratio \* $height_ratio)
+
+# use the maxrate as the base for the bitrate calculations (Perfect Stream would have 25x this rate.)
+b_maxrate=$(expr $big_width \* $big_height \* 4)
+m_maxrate=$(expr $med_width \* $med_height \* 5)
+
+# convert from bit to kb
+ff_big=$(awk -v br=$b_maxrate 'BEGIN { printf "%.0f", br / 1024}')
+ff_med=$(awk -v br=$m_maxrate 'BEGIN { printf "%.0f", br / 1024}')
+
+big_maxrate=${ff_big}"k"
+big_bv=$(expr $ff_big / 2)"k"
+big_bufsize=$(expr $ff_big \* 3)"k"
+big_minrate=$(expr $ff_big / 3)"k"
+med_maxrate=${ff_med}"k"
+med_bv=$(expr $ff_med / 2)"k"
+med_bufsize=$(expr $ff_med \* 3)"k"
+med_minrate=$(expr $ff_med / 3)"k"
+
+
+#set the buffer according to height and width ()
+buffbig="-qmin 2 -qmax 18 -crf 18 -b:v ${big_bv} -minrate ${big_minrate} -maxrate ${big_maxrate} -bufsize ${big_bufsize} -vf scale=${big_width}:trunc(ow/a/2)*2,hqdn3d=2:1:2"
+buffmed="-qmin 2 -qmax 18 -crf 18 -b:v ${med_bv} -minrate ${med_minrate} -maxrate ${med_maxrate} -bufsize ${med_bufsize} -vf scale=${med_width}:trunc(ow/a/2)*2,hqdn3d=2:1:2"
+basics="-threads 0 -preset veryfast -g 25 -force_key_frames expr:gte(t,n_forced*2) -pix_fmt yuv420p "
+#testing="-ss 00:00:10 -t 10"
+
+# make the first needed stuff first
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f image2 -ss 00:00:05 -vframes 1 -r 1 -vf scale=${big_width}:${big_height} -an ${tmp}/poster-720p.png 
+gm convert ${tmp}/poster-720p.png -quality 92 -resize '512x512>'  ${file}-preview.jpg  
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f image2 -ss 00:00:03 -vf "scale=${thumb_width}:${thumb_height}" -frames:v 1  -vsync 0 -an ${tmp}/img%05d.png 
+gm convert ${tmp}/img00001.png -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 +profile '*' "${file}-thumb.jpg"
+gm convert ${file}-thumb.jpg ${file}-thumb.gif 
+
+
+#gm convert ${tmp}/poster-720p.png -quality 92 ${file}-poster-720p.jpg  
+gm convert ${tmp}/poster-720p.png -quality 92 -resize ${med_width}x ${file}-poster-360p.jpg  
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f image2 -vf "select=gt(scene\,0.1),scale=${thumb_width}:${thumb_height}" -frames:v 20 -vsync 0 -an ${tmp}/img%05d.png 
+
+echo "making thumbmovie step 2"  
+echo "**********************************************************"  
+echo "making thumb.gif"  
+
+  
+# -ordered-dither threshold,8,8,4
+gm convert -delay 25 -loop 0 ${tmp}/img*.png -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128' -depth 8 ${file}-thumb.gif 
+
+
+
+#ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3" \
+# ${testing} -f mp4 -c:a libfdk_aac -b:a 128k -c:v libx264 ${basics} -vprofile main ${buffbig} ${tmp}/720p.mp4 \
+# ${testing} -f mp4 -c:a libfdk_aac -b:a 128k -c:v libx264 ${basics} -vprofile main ${buffmed} ${tmp}/360p.mp4 \
+# ${testing} -f webm -c:a libvorbis -b:a 128k -c:v libvpx ${basics} ${buffbig} ${file}-720p.webm \
+# ${testing} -f webm -c:a libvorbis -b:a 128k -c:v libvpx ${basics} ${buffmed} ${file}-360p.webm \
+# ${testing} -c:a libvorbis -b:a 128k -c:v libtheora ${basics} ${buffbig} ${file}-720p.ogv \
+# ${testing} -c:a libvorbis -b:a 128k -c:v libtheora ${basics} ${buffmed} ${file}-360p.ogv \
+# -f image2 -ss 00:00:05 -vframes 1 -r 1 -vf scale=${big_width}:${big_height} -an ${tmp}/poster-720p.png \
+# -f image2 -vf "select=gt(scene\,0.1),scale=${thumb_width}:${thumb_height}" -frames:v 20  -vsync 0 -an ${tmp}/img%05d.png \
+# -f image2 -ss 00:00:03 -vf "scale=${thumb_width}:${thumb_height}" -frames:v 1  -vsync 0 -an ${tmp}/img%05d.png \
+ 
+#ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3" -f mp4 -c:a libfdk_aac -b:a 128k -c:v libx264 ${basics} -vprofile main ${buffbig} ${tmp}/720p.mp4 
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f mp4 -c:a libfdk_aac -b:a 128k -c:v libx264 ${basics} -vprofile main ${buffmed} ${tmp}/360p.mp4 
+#ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f webm -c:a libvorbis -b:a 128k -c:v libvpx ${basics} ${buffbig} ${file}-720p.webm 
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -f webm -c:a libvorbis -b:a 128k -c:v libvpx ${basics} ${buffmed} ${file}-360p.webm 
+#ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -c:a libvorbis -b:a 128k -c:v libtheora ${basics} ${buffbig} ${file}-720p.ogv 
+ffmpeg -y -i $1 -loglevel error -metadata title="${title}" -metadata author="$3"  -c:a libvorbis -b:a 128k -c:v libtheora ${basics} ${buffmed} ${file}-360p.ogg
+
+
+
+# move the moov to the front in the mp4's
+# if qt-faststart not available, add -movflags faststart to the mp4 lines
+#qt-faststart ${tmp}/720p.mp4 ${file}-720p.mp4  
+qt-faststart ${tmp}/360p.mp4 ${file}-360p.mp4  
+
+
+
+
+rm -R $tmp
+
+;;
+
+###########################################################
+#                                                         #
+#     AUDIO   - might be making broken mp3s...            #
+#                                                         #
+###########################################################
+
+'audio/mp3' | 'audio/wav' | 'audio/aiff' | 'audio/x-aiff' | 'audio/flac' | 'audio/ogg' | 'audio/mpeg' | 'audio/webm'  | 'audio/x-wav' | 'audio/mid')
+
+# make an mp3, wav & ogg version for webpreview
+# we expect most recordings to be terrible, so we are going to normalize them.
+
+# later, we could check and see if the user wants to equalize the file with a nice short fade in
+#equalize="compand 0.1,0.3 -90,-84,-43,-37,-31,-31,-26,-26,-16,-21,0,-20.25 0 0 0.1"
+
+
+
+# here we make a spectrogram for the pretty colors
+# of course this will break if there are more than two channels so we should probably downmix...
+sox $1 -n spectrogram -o ${file}-waveform.png -x 1024 -y 257 -r -p 6 -h -m -a   
+gm convert ${file}-waveform.png -flip -crop 1024x257 $file-bot.png   
+gm convert ${file}-waveform.png -crop 1024x257 $file-top.png   
+gm montage $file-top.png $file-bot.png -tile 1x2 -mode Concatenate  ${file}-preview.jpg   
+
+gm convert ${file}-preview.jpg -auto-orient -flatten -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128' -quality 92 -interlace plane  -sampling-factor 1x1 +profile '*' "${file}-thumb.jpg"  
+
+rm $file-top.png
+rm $file-bot.png
+rm ${file}-waveform.png
+
+sox $1 ${file}-transcoded.mp3  
+#sox $1 -V --norm=-3 ${file}-transcoded.wav   # turned off to save space.
+sox $1 ${file}-transcoded.ogg  
+
+# btw this fades in quick and equalizes brilliantly. 
+# it is unfortunately processor heavy
+#sox -V --norm=-3 --magic "${1}" "${1}-transcoded.ogg" compand 0.1,0.3 -90,-84,-43,-37,-31,-31,-26,-26,-16,-21,0,-20.25 0 0 0.1
+
+;;
+
+###########################################################
+#                                                         #
+#     PDF  - lores pdfs are shit, but make big files :(   #
+#                                                         #
+###########################################################
+
+'application/acrobat' | 'application/x-pdf' | 'applications/vnd.pdf' | 'text/pdf' | 'text/x-pdf' | 'application/pdf')
+
+mkdir "${dir}/html/"  
+mkdir "${dir}/jpg/"  
+
+gm convert ${1}'[0]' -quality 92 -resize '512x512>'  -interlace plane -flatten -depth 8 ${file}-preview.jpg  
+
+gm convert ${1}'[0]' -auto-orient -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane -flatten -depth 8 "${file}-thumb.jpg"  
+
+
+# make an image preview of all pages for the thumbgif
+pageNum=$(gs -q -dNODISPLAY -c "(${1}) (r) file runpdfbegin pdfpagecount = quit")  
+
+gs -q -dNOPAUSE -dBATCH -sDEVICE=jpeg -dFirstPage=1 -dLastPage=$pageNum -sOutputFile=${dir}/jpg/${base}-%09d.jpg -dJPEGQ=95 -r300 ${1} -c quit  
+
+
+
+# make an animated thumbgif of the whole document
+gm convert ${dir}/jpg/${base}-*.jpg -delay 25 -loop 0 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128' ${file}-thumb.gif 
+
+pdftohtml -p -c -nodrm -fmt jpg $1 ${dir}/html/${base}.html  
+
+
+
+;;
+
+###########################################################
+#                                                         #
+#     DOCUMENT / SPREADSHEETS / PRESENTATIONS             #
+#                                                         #
+###########################################################
+
+'application/doc' | 'application/macwriteii' | 'application/microsoft_word' | 'application/mswrite' | 'application/msword' | 'application/x-msword' | 'application/rtf' | 'application/wri' | 'aplication/x-dos_ms_word' | 'application/x-mswrite' | 'application/x-rtf' | 'application/x-soffice' | 'application/x-wri' | 'text/richtext' | 'text/rtf' | 'zz-application/zz-winassoc-wri' | 'text/plain' | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' | 'application/vnd.ms-excel' | 'application/msexcel' | 'application/x-msexcel' | 'application/x-ms-excel' | 'application/x-excel' | 'application/x-dos_ms_excel' | 'application/xls' | 'application/x-xls' | 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' | 'application/vnd.openxmlformats-officedocument.spreadsheetml.template' | 'application/vnd.ms-excel.sheet.macroEnabled.12' | 'application/vnd.ms-excel.template.macroEnabled.12' | 'application/vnd.ms-excel.addin.macroEnabled.12' | 'application/vnd.ms-excel.sheet.binary.macroEnabled.12' | 'application/vnd.ms-powerpoint' | 'application/vnd.openxmlformats-officedocument.presentationml.presentation' | 'application/vnd.openxmlformats-officedocument.presentationml.template' | 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' | 'application/vnd.ms-powerpoint.addin.macroEnabled.12' | 'application/vnd.ms-powerpoint.presentation.macroEnabled.12' | 'application/vnd.ms-powerpoint.template.macroEnabled.12' | 'application/vnd.ms-powerpoint.slideshow.macroEnabled.12' | 'application/vnd.oasis.opendocument.text' | 'application/x-vnd.oasis.opendocument.text' | 'application/vnd.oasis.opendocument.chart' | 'application/x-vnd.oasis.opendocument.chart' | 'application/vnd.oasis.opendocument.chart-template' | 'application/x-vnd.oasis.opendocument.chart-template' | 'application/vnd.oasis.opendocument.formula' | 'application/x-vnd.oasis.opendocument.formula' | 'application/vnd.oasis.opendocument.formula-template' | 'application/x-vnd.oasis.opendocument.formula-template' | 'application/vnd.oasis.opendocument.graphics' | 'application/x-vnd.oasis.opendocument.graphics' | 'application/vnd.oasis.opendocument.graphics-template' | 'application/x-vnd.oasis.opendocument.graphics-template' | 'application/vnd.oasis.opendocument.image' | 'application/x-vnd.oasis.opendocument.image' | 'application/vnd.oasis.opendocument.image-template' | 'application/x-vnd.oasis.opendocument.image-template' | 'application/vnd.oasis.opendocument.presentation' | 'application/x-vnd.oasis.opendocument.presentation' | 'application/vnd.oasis.opendocument.presentation-template' | 'application/x-vnd.oasis.opendocument.presentation-template' | 'application/vnd.oasis.opendocument.spreadsheet' | 'application/x-vnd.oasis.opendocument.spreadsheet' | 'application/vnd.oasis.opendocument.spreadsheet-template' | 'application/x-vnd.oasis.opendocument.spreadsheet-template' | 'application/vnd.oasis.opendocument.text-master' | 'application/x-vnd.oasis.opendocument.text-master' | 'application/vnd.oasis.opendocument.text-template' | 'application/x-vnd.oasis.opendocument.text-template' | 'application/vnd.oasis.opendocument.text-web' | 'application/x-vnd.oasis.opendocument.text-web' )
+
+mkdir "${dir}/html/"  
+mkdir "${dir}/jpg/"  
+
+# make a pdf version for subsequent processing and as download
+unoconv -f pdf $1  
+
+gm convert ${file}.pdf'[0]' -quality 92 -resize '512x512>' ${file}-preview.jpg  
+# make a thumbnail jpg of the first page 
+gm convert  ${file}.pdf'[0]' -auto-orient -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane -flatten -depth 8 "${file}-thumb.jpg"  
+
+# make an html version of the page for online viewing
+pdftohtml -p -c -nodrm -fmt jpg ${file}.pdf ${dir}/html/${base}.html  
+
+# clean out the empty space to shrink the file size by about 30%
+for f in ${dir}/html/*.html; do 
+  sed 's/&#160;/ /g' ${f} > ${f}.bak
+  mv ${f}.bak ${f}
+done
+
+# make an image preview of all pages for the thumbgif
+pageNum=$(gs -q -dNODISPLAY -c "(${file}.pdf) (r) file runpdfbegin pdfpagecount = quit")  
+gs -q -dNOPAUSE -dBATCH -sDEVICE=jpeg -dFirstPage=1 -dLastPage=$pageNum -sOutputFile=${dir}/jpg/${base}-%09d.jpg -dJPEGQ=90 -r90 ${file}.pdf -c quit  
+
+# make an animated thumbgif of the whole document
+gm convert ${dir}/jpg/${base}-*.jpg -delay 25 -loop 0 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128' ${file}-thumb.gif  
+rm -r ${dir}/jpg/
+
+
+
+
+;;
+
+###########################################################
+#                                                         #
+#     COMPRESSED FILES                                    #
+#                                                         #
+###########################################################
+
+'application/zip' | 'application/x-gzip' | 'application/gzip' | 'application/x-compress' | 'application/x-compressed' | 'application/x-stuffit' | 'application/x-tar' | 'application/x-winzip' | 'application/x-zip' | 'multipart/x-zip' | 'application/x-rar-compressed' | 'application/x-7z-compressed' | 'application/x-apple-diskimage' | 'application/x-gtar' | 'application/x-bzip2' | 'application/x-compressed-tar' )
+
+mkdir "${dir}/html/"  
+mkdir "${dir}/jpg/"  
+
+als $1 -l > ${dir}/html/${base}.txt  
+#sed "1d" ${dir}/html/${base}.txt > ${dir}/html/${base}.html  
+sed "1s/.*/Archive: ${base}.${extension}/" ${dir}/html/${base}.txt > ${dir}/html/${base}.html  
+rm ${dir}/html/${base}.txt
+
+arepack $1 ${file}.zip  
+#md5sum --tag ${file}.zip > ${file}.md5 
+#sha1sum --tag ${file}.zip > ${file}.sha1
+
+unoconv -f pdf ${dir}/html/${base}.html 
+mv ${dir}/html/${base}.pdf ${dir}/${base}.pdf
+
+pageNum=$(gs -q -dNODISPLAY -c "(${dir}/${base}.pdf) (r) file runpdfbegin pdfpagecount = quit")  
+gs -q -dNOPAUSE -dBATCH -sDEVICE=jpeg -dFirstPage=1 -dLastPage=$pageNum -sOutputFile=${dir}/jpg/${base}-%09d.jpg -dJPEGQ=90 -r90 ${dir}/${base}.pdf -c quit  
+
+gm convert  ${dir}/${base}.pdf'[0]' -auto-orient -flatten -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 +profile '!exif,*' "${file}-preview.jpg"
+
+# make a thumbnail jpg of the first page 
+gm convert  ${dir}/${base}.pdf'[0]' -auto-orient -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane -flatten -depth 8 "${file}-thumb.jpg"  
+
+# make an animated thumbgif of the whole document
+gm convert ${dir}/jpg/${base}-*.jpg -delay 25 -loop 0 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  ${file}-thumb.gif  
+;;
+
+###########################################################
+#                                                         #
+#     3D FILES - implement ASAP                           #
+#                                                         #
+###########################################################
+
+'application/vnd.ms-pki.stl' | 'application/octet-stream' | 'model/meta-mime-ply' | 'model/vrml' | 'model/vnd.collada+xml' | 'image/x-3ds' | 'model/x3d+binary' | 'model/x3d+vrml' | 'model/x3d+xml' | 'model/mesh' | 'model/fake-mime-ply'| 'model/fake-mime-obj' )
+
+echo 'We should try to do something with these, now that we know their mime-types.'
+
+# Explicitly cite in your work that you have used MeshLab, a tool developed with the support of the 3D-CoForm project, 
+
+#  STL,OBJ
+#    convert obj -> stl
+#    make thumb of stl -> stl2pov
+#      stl2pdf infile [outfile] [x degrees | y degrees | z degrees ...]
+#      convert outfile >jpg
+#   ps-stl-3.1.zip
+#   http://rsmith.home.xs4all.nl/software/py-stl-stl2pov.html
+#   create a U3D (for pdf embedding) with meshlab. 
+
+# other tools for this
+# meshconv <model filespec> [-c <output filetype>] [-o <output filename>] [<options>]
+# > dxf obj off ply stl wrl
+# eg: meshconv /home/models/train.off -c ply -tri -o /home/ply/train
+
+# stl2ps.py
+
+# Xvfb & disown
+# DISPLAY=:0 meshlabserver
+
+;;
+
+###########################################################
+#                                                         #
+#     ARCHIVE A WEBPAGE                                   #
+#                                                         #
+###########################################################
+
+'application/x-mswinurl' )
+
+# this is not an upload, but a generated image
+# rights naturally revert to the owner of the website
+# this function exists to capture websites
+# it probably breaks the TOS of many services, but for the
+# purpose of an archive this is still valid.
+# MUST SET UNKNOWN LICENSE to prevent further usage of this
+# according to our TOS.
+
+read -r address < $1
+echo $address
+capturetime=${date}
+# use webaddress
+# phantom.js to make screen captures -> makes png at $file.png cuz resolution.
+
+# we need to make a symlink to ~/webScreenshot.js
+phantomjs ~/webScreenshot.js "$address" $file
+
+# phantomjs ${PWD}/bash/webScreenshot.js "$address" $file
+
+gm convert $file.png -auto-orient -flatten -depth 16 -filter lanczos -resize '512x512>' -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 +profile '!exif,*' "${file}-preview.jpg"
+echo "Created preview image from ${1}"
+
+# fix up the exif information   
+gm convert $file.png -auto-orient -flatten -depth 16 -filter lanczos -thumbnail '16384@' -gravity center -background black -extent '128x128'  -quality 92 -interlace plane  -sampling-factor 1x1 -depth 8 +profile '*' "${file}-thumb.jpg"  
+echo "Created thumb image from ${1}" 
+
+gm convert $file.png -auto-orient -flatten -depth 16 -filter lanczos -quality 95 -interlace plane -sampling-factor 1x1 -depth 8 $file.jpg 
+
+exiftool "${file}.jpg" -Software='ARCHIVITEKT' -Contact='archivitekt@das-gaengeviertel.info' -Copyright='No copyright claim made. This capture was made for Archival Reference by ARCHIVITEKT.' -Subject="CAPTURE TIME: $capturetime" -overwrite_original
+exiftool "${file}-thumb.jpg" -Software='ARCHIVITEKT' -Contact='archivitekt@das-gaengeviertel.info' -Copyright='No copyright claim made. This capture was made for Archival Reference by ARCHIVITEKT.' -Subject="CAPTURE TIME: $capturetime" -overwrite_original
+exiftool "${file}-preview.jpg" -Software='ARCHIVITEKT' -Contact='archivitekt@das-gaengeviertel.info' -Copyright='No copyright claim made. This capture was made for Archival Reference by ARCHIVITEKT.' -Subject="CAPTURE TIME: $capturetime" -overwrite_original
+
+rm ${file}.png
+
+
+;;
+###########################################################
+#                                                         #
+#     BINARY / STREAM / WHO THE FUCK KNOWS                #
+#                                                         #
+###########################################################
+
+'binary' | 'application/octet-stream' | 'application/binary')
+
+# We don't have a clue what type of file this is. :(
+echo "Could not analyze file because of Binary Type."  
+echo "ERROR: Binary Files Can not be Processed."
+exit 1 
+;;
+
+*) 
+# We don't handle this format. 
+echo "Could not analyze file."  
+echo "ERROR: File mime type unknown > " $mime
+exit 1 
+esac
+
+end=$(date +%s)
+
+echo "Duration: "$((end-begin))" seconds"  
+
+exit 0
