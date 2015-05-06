@@ -1,5 +1,5 @@
 {
-    "mimetypes": {
+    "media-types": {
         "fits": ["image/fits","application/fits"],
         "video": [ "video/mp4", "video/ogg", "video/webm", "video/3gpp", "video/3gpp2", "video/x-flv", "video/x-msvideo", "video/msvideo", "video/h261", "video/h263", "video/h264", "video/h265", "video/jpeg", "video/x-m4v", "video/x-ms-wm", "video/mpeg", "application/mp4", "video/quicktime", "video/x-sgi-movie", "video/fake-y4m","video/mp2t","video/x-ms-wmv"],
         "audio": ["audio/mp3", "audio/wav", "audio/aiff", "audio/x-aiff", "audio/flac", "audio/ogg", "audio/mpeg", "audio/webm" , "audio/x-wav", "audio/mid"],

@@ -216,9 +216,9 @@ make distclean
 PACKAGE="ufraw"
 BuildMessage "Building ${PACKAGE}"
 cd ${INSTALLROOT}
-wget http://downloads.sourceforge.net/project/ufraw/ufraw/ufraw-0.20/ufraw-0.20.tar.gz || BuildError "Could not be downloaded"
-tar xzf ufraw-0.20.tar.gz
-cd ufraw-0.20
+wget http://downloads.sourceforge.net/project/ufraw/ufraw/ufraw-0.21/ufraw-0.21.tar.gz || BuildError "Could not be downloaded"
+tar xzf ufraw-0.21.tar.gz
+cd ufraw-0.21
 ./configure --enable-extras --enable-x-trans || BuildError "Could not ./configure"
 make || BuildError "Could not make"
 sudo make install || BuildError "Could not make install"
@@ -523,9 +523,9 @@ update-rc.d Xvfb defaults
 PACKAGE="libpng 1.6"
 BuildMessage "Building ${PACKAGE}"
 cd ${INSTALLROOT}
-wget http://sourceforge.net/projects/libpng/files/libpng16/1.6.13/libpng-1.6.13.tar.gz || BuildError "Could not be downloaded"
-tar xzvf libpng-1.6.13.tar.gz
-cd libpng-1.6.13
+wget http://sourceforge.net/projects/libpng/files/libpng16/1.6.17/libpng-1.6.17.tar.gz || BuildError "Could not be downloaded"
+tar xzvf libpng-1.6.17.tar.gz
+cd libpng-1.6.17
 ./configure || BuildError "Could not ./configure"
 make || BuildError "Could not make"
 sudo make install || BuildError "Could not make install"
