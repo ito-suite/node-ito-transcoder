@@ -556,6 +556,18 @@ git checkout 1.9 || BuildError "Could git checkout"
 sudo cp bin/phantomjs /usr/local/bin/phantomjs
 sudo ldconfig
 
+PACKAGE="melt"
+BuildMessage "Building ${PACKAGE}"
+cd ${INSTALLROOT}
+wget http://sourceforge.net/projects/mlt/files/latest/download || BuildError "Could not be downloaded"
+tar xvzf download
+mv download mlt.tar.gz
+cd mlt*
+./configure || BuildError "Could not ./configure"
+make || BuildError "Could not make"
+sudo make install  || BuildError "Could not make install"
+sudo ldconfig
+
 
 #wow.
 clear
@@ -567,6 +579,7 @@ pngcrush
 unoconv --version
 exiftool
 gm version
+melt -version
 meshconv
 stl2ps.py
 Xvfb & disown

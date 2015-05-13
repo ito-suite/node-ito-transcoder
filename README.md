@@ -7,6 +7,12 @@ This is currently unstable. The version beginning at 2 is due to the porting of 
 
 ## GET STARTED ##
 
+You'll want to first `git clone` the repository, change into the `bin/` directory and execute `sudo ./build.sh`
+
+This will download, configure and install all of the third-party components (On Ubuntu.) 
+
+However, we are working on making a transcoder VM that you can download and try out the system. Indeed, it is probably better to run the transcoder in a VM because some processes can be resource greedy, and that way you can guarantee some system stability.
+
 
 
 ### LICENSE ###
